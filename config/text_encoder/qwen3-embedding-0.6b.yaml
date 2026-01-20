@@ -1,0 +1,6 @@
+_target_: project.pre_trained_model.load_pre_trained_text_embedding_model
+
+name: qwen3-embedding-0.6b
+
+model_name: "Qwen/Qwen3-Embedding-0.6B"
+tokenizer_name: "Qwen/Qwen3-Embedding-0.6B"

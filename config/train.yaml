@@ -1,5 +1,5 @@
 defaults:
-  - task: unlearning_atu
+  - task: unlearning_enpo
   - hydra: default
   # Allow the model to overwrite the settings below
   - _self_
@@ -8,7 +8,7 @@ defaults:
 
 unlearning_target: "1_Stephen_King"
 
-skip_initial_eval: false
+skip_initial_eval: true
 
 seed: ~
 
@@ -17,7 +17,7 @@ exp: atu-unlearning
 
 wandb:
   id: ~
-  entity: philippspohn # TODO: change to your wandb entity
+  entity: "1137113080-wuhan-university" # Your wandb entity (or use "1137113080" if that's your username)
   project: ${exp}
   group: ~
   name: ${name}
