@@ -36,6 +36,29 @@ python launch_training.py task=unlearning_ga
 python launch_training.py task=unlearning_npo
 ```
 
+## 生成实验结果表格和图表
+
+实验完成后，可以使用 `generate_results.py` 脚本生成论文中使用的表格和图表：
+
+```bash
+# 从 wandb 生成结果
+python generate_results.py \
+    --source wandb \
+    --entity "1137113080-wuhan-university" \
+    --project "atu-unlearning" \
+    --output_dir ./results
+
+# 聚合多个目标的结果（计算平均值）
+python generate_results.py \
+    --source wandb \
+    --entity "1137113080-wuhan-university" \
+    --project "atu-unlearning" \
+    --aggregate \
+    --output_dir ./results
+```
+
+详细使用说明请参考 [RESULTS_GUIDE.md](RESULTS_GUIDE.md)。
+
 ## Acknowledgements
 - Based on template by Marten Lienen (https://github.com/martenlienen)
 - Some of the code adopted from the RWKU benchmark (https://github.com/jinzhuoran/RWKU)
