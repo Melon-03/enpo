@@ -17,10 +17,12 @@ training_module:
   pretrained_model_hook_layer: 29
   clip_grad_norm: 1.0
   beta: 1.0  # eNPO loss parameter
+  l1_weight: 1.0  # Weight for L1 (eNPO loss)
+  l2_weight: 0.1  # Weight for L2 (KL divergence loss for non-forgetting)
 
 num_other_targets: 3
 
-first_stage_steps: 15000
+first_stage_steps: 2000
 
 # Optional checkpoint paths (set to null if not needed)
 model_checkpoint_path: null

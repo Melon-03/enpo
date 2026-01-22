@@ -21,6 +21,10 @@ from project.utils import (
     set_seed,
 )
 
+# Set tokenizers parallelism to avoid warnings when forking processes
+# This should be set before any tokenizer is imported or used
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 # Log to traceback to stderr on segfault
 faulthandler.enable(all_threads=False)
 
@@ -65,6 +69,15 @@ def store_job_info(config: DictConfig):
 # @print_exceptions
 def train(config: DictConfig):
     print(f"Running training on {socket.gethostname()}")
+
+    # 设置临时目录到大容量存储，确保checkpoint保存时有足够空间
+    if "TMPDIR" not in os.environ:
+        tmp_dir = "/root/autodl-tmp/tmp"
+        os.makedirs(tmp_dir, exist_ok=True)
+        os.environ["TMPDIR"] = tmp_dir
+        log.info(f"设置临时目录为: {tmp_dir}")
+
+    
     rng = set_seed(config)
 
     # Log host and slurm job ID

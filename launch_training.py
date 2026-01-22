@@ -1,5 +1,10 @@
 #!/usr/bin/env python
 
+import os
+# Set tokenizers parallelism to avoid warnings when forking processes
+# This must be set before any tokenizer is imported or used
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 import hydra
 from project.launch_utils.exceptions import print_exceptions
 from omegaconf import DictConfig

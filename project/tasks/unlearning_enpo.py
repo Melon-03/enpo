@@ -163,10 +163,10 @@ class UnlearningENPO:
         
         trainer = Trainer(
             **self.global_config.trainer,
-            callbacks=get_default_callbacks(),
+            callbacks=get_default_callbacks(enable_checkpointing=False),  # 不保存checkpoint
             logger=self.logger,
             # plugins=[SLURMEnvironment(auto_requeue=False)],
-            enable_checkpointing=True,
+            enable_checkpointing=False,
         )
 
         log.info("Starting initial evaluation!")
@@ -237,6 +237,8 @@ class UnlearningENPOTrainingModule(pl.LightningModule):
         pretrained_model_hook_layer: int,
         clip_grad_norm: float,
         beta: float = 1.0,
+        l1_weight: float = 1.0,
+        l2_weight: float = 0.1,
         stage: Literal["training", "unlearning"] = "training",
         **kwargs,
     ):
@@ -252,6 +254,8 @@ class UnlearningENPOTrainingModule(pl.LightningModule):
         self.text_encoder_tokenizer = text_encoder_tokenizer
         self.unlearning_target = unlearning_target
         self.beta = beta
+        self.l1_weight = l1_weight
+        self.l2_weight = l2_weight
         self.stage = stage
         # Reference models for eNPO (will be set when switching to unlearning stage or loaded from path)
         self.embedding_prediction_model_ref = None
@@ -574,25 +578,96 @@ class UnlearningENPOTrainingModule(pl.LightningModule):
             self.sim_e_hat_unlearn = sim_e_hat_unlearn
             self.sim_e_ref_unlearn = sim_e_ref_unlearn
 
-            # L_eNPO = - (1/β) E_x [log σ(-β Δ(e))]
+            # L1: L_eNPO = - (1/β) E_x [log σ(-β Δ(e))]
             # Apply mask if needed (only compute loss where has_full_window is True)
             if "has_full_window" in batch:
                 has_full_window = batch["has_full_window"]  # shape (batch_size, seq_len)
                 # Only compute loss for valid positions
                 valid_delta = delta_e * has_full_window
                 # Compute eNPO loss
-                loss = - (1.0 / self.beta) * torch.log(
+                l1_loss = - (1.0 / self.beta) * torch.log(
                     torch.sigmoid(-self.beta * valid_delta) + 1e-8
                 )
                 # Average over valid positions
-                loss = loss.sum() / (has_full_window.sum() + 1e-8)
+                l1_loss = l1_loss.sum() / (has_full_window.sum() + 1e-8)
             else:
                 # Compute eNPO loss for all positions
-                loss = - (1.0 / self.beta) * torch.log(
+                l1_loss = - (1.0 / self.beta) * torch.log(
                     torch.sigmoid(-self.beta * delta_e) + 1e-8
                 ).mean()
             
-            assert not torch.isnan(loss), "Loss is NaN"
+            assert not torch.isnan(l1_loss), "L1 loss is NaN"
+            
+            # L2: KL divergence loss to maintain non-forgetting capability
+            # Compute logits from current model and reference model
+            # Get logits from current model (already computed in pretrained_outputs)
+            current_logits = pretrained_outputs.logits  # shape (batch_size, seq_len, vocab_size)
+            
+            # Get logits from reference model
+            with torch.no_grad():
+                ref_device = next(self.pre_trained_llm_ref.parameters()).device
+                input_ids_cpu = input_ids.to(ref_device)
+                attention_mask_cpu = attention_mask.to(ref_device)
+                
+                # Get reference logits
+                pretrained_outputs_ref_logits = self.pre_trained_llm_ref(
+                    input_ids=input_ids_cpu,
+                    attention_mask=attention_mask_cpu,
+                )
+                ref_logits = pretrained_outputs_ref_logits.logits  # shape (batch_size, seq_len, vocab_size)
+                ref_logits = ref_logits.to(current_logits.device)
+            
+            # Compute KL divergence: KL(P_current || P_ref)
+            # Apply temperature to stabilize training (optional, using 1.0 by default)
+            temperature = 1.0
+            current_log_probs = torch.nn.functional.log_softmax(current_logits / temperature, dim=-1)
+            ref_log_probs = torch.nn.functional.log_softmax(ref_logits / temperature, dim=-1)
+            
+            # KL divergence: sum over vocabulary dimension
+            kl_div = torch.nn.functional.kl_div(
+                current_log_probs.view(-1, current_log_probs.size(-1)),
+                ref_log_probs.view(-1, ref_log_probs.size(-1)),
+                reduction='none',
+                log_target=True
+            ).sum(dim=-1)  # shape (batch_size * seq_len,)
+            
+            # Reshape back to (batch_size, seq_len)
+            kl_div = kl_div.view(batch_size, seq_len)
+            
+            # Apply attention mask to ignore padding tokens
+            if attention_mask is not None and isinstance(attention_mask, torch.Tensor) and attention_mask.dim() >= 2:
+                # Ensure attention_mask is a 2D tensor
+                if attention_mask.dim() == 2:
+                    # Check if sequence lengths match
+                    if kl_div.shape[1] == attention_mask.shape[1]:
+                        # Use attention mask directly
+                        kl_mask = attention_mask.float()
+                    else:
+                        # Handle sequence length mismatch
+                        min_len = min(kl_div.shape[1], attention_mask.shape[1])
+                        kl_mask = attention_mask[:, :min_len].float()
+                        kl_div = kl_div[:, :min_len]
+                    
+                    # Average over valid tokens only
+                    l2_loss = (kl_div * kl_mask).sum() / (kl_mask.sum() + 1e-8)
+                else:
+                    # If attention_mask has unexpected dimensions, use mean
+                    log.warning(f"Unexpected attention_mask shape: {attention_mask.shape}, using mean for L2 loss")
+                    l2_loss = kl_div.mean()
+            else:
+                # Average over all positions if no valid attention mask
+                l2_loss = kl_div.mean()
+            
+            assert not torch.isnan(l2_loss), "L2 loss is NaN"
+            
+            # Total loss: weighted sum of L1 and L2
+            loss = self.l1_weight * l1_loss + self.l2_weight * l2_loss
+            
+            assert not torch.isnan(loss), "Total loss is NaN"
+            
+            # Store L1 and L2 losses for logging
+            self.l1_loss = l1_loss
+            self.l2_loss = l2_loss
 
             opt_list[1].zero_grad()
             self.manual_backward(loss)
@@ -610,6 +685,13 @@ class UnlearningENPOTrainingModule(pl.LightningModule):
         else:
             self.log("train/unlearning_loss", loss, batch_size=batch_size)
             self.log("train/enpo_beta", self.beta)
+            # Log L1 and L2 losses separately
+            if hasattr(self, 'l1_loss'):
+                self.log("train/l1_loss", self.l1_loss, batch_size=batch_size)
+            if hasattr(self, 'l2_loss'):
+                self.log("train/l2_loss", self.l2_loss, batch_size=batch_size)
+            self.log("train/l1_weight", self.l1_weight)
+            self.log("train/l2_weight", self.l2_weight)
             # Log additional metrics for debugging
             if hasattr(self, 'delta_e'):
                 self.log("train/delta_e_mean", self.delta_e.mean(), batch_size=batch_size)
