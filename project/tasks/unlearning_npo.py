@@ -1,4 +1,5 @@
 from copy import deepcopy
+from pathlib import Path
 from omegaconf import DictConfig
 from lightning.pytorch import Trainer
 from lightning.pytorch.plugins.environments import SLURMEnvironment
@@ -40,10 +41,21 @@ class UnlearningNPO:
         task_config = self.global_config.task
 
         log.info("Creating reference model (model_ref)")
+        # 将模型移到CPU进行deepcopy，避免占用GPU显存
+        original_device = next(self.pre_trained_llm.parameters()).device
+        log.info(f"Moving model to CPU for deepcopy (original device: {original_device})")
+        self.pre_trained_llm = self.pre_trained_llm.cpu()
+        torch.cuda.empty_cache()  # 清空GPU缓存
+        
         model_ref = deepcopy(self.pre_trained_llm)
         model_ref.eval()
         for param in model_ref.parameters():
             param.requires_grad = False
+        
+        # 将model_ref保持在CPU上，model_theta移回原设备
+        model_ref = model_ref.cpu()
+        self.pre_trained_llm = self.pre_trained_llm.to(original_device)
+        log.info(f"model_ref created and kept on CPU, model_theta moved back to {original_device}")
 
         log.info("Loading data")
         unlearning_datamodule = instantiate(
@@ -113,6 +125,22 @@ class UnlearningNPO:
             )
             trainer.logger.log_metrics(results)
         log.info("Unlearning complete!")
+        
+        # 保存被遗忘的模型
+        save_dir = Path("/root/autodl-tmp/saved-models") / "npo" / self.target_id
+        save_dir.mkdir(parents=True, exist_ok=True)
+        log.info(f"模型将保存到: {save_dir}")
+        
+        unlearned_model_path = save_dir / "unlearned_model.pt"
+        log.info(f"保存被遗忘的目标模型到: {unlearned_model_path}")
+        # 获取原设备
+        original_device = next(self.pre_trained_llm.parameters()).device
+        # 将模型移到CPU以节省GPU内存并保存
+        self.pre_trained_llm = self.pre_trained_llm.cpu()
+        torch.save(self.pre_trained_llm.state_dict(), unlearned_model_path)
+        # 恢复模型到原设备
+        self.pre_trained_llm = self.pre_trained_llm.to(original_device)
+        log.info(f"被遗忘的目标模型已保存")
 
 
 class UnlearningNPOTrainingModule(pl.LightningModule):
@@ -136,10 +164,35 @@ class UnlearningNPOTrainingModule(pl.LightningModule):
         for param in self.model_theta.parameters():
             param.requires_grad = True
         
+        # 启用梯度检查点以节省显存
+        if hasattr(self.model_theta, 'gradient_checkpointing_enable'):
+            self.model_theta.gradient_checkpointing_enable()
+            log.info("Enabled gradient checkpointing to save GPU memory")
+        
         self.model_ref.eval()
         for param in self.model_ref.parameters():
             param.requires_grad = False
-
+        
+        # 确保model_ref在CPU上
+        if next(self.model_ref.parameters()).device.type != 'cpu':
+            log.info("Moving model_ref to CPU to save GPU memory")
+            self.model_ref = self.model_ref.cpu()
+    
+    def on_fit_start(self):
+        """在训练开始前确保model_ref在CPU上"""
+        if next(self.model_ref.parameters()).device.type != 'cpu':
+            log.info("Moving model_ref to CPU before training starts")
+            self.model_ref = self.model_ref.cpu()
+            torch.cuda.empty_cache()
+    
+    def on_train_batch_start(self, batch, batch_idx):
+        """在每个训练batch开始前确保model_ref在CPU上"""
+        # Lightning可能会自动移动模型，所以每次都要检查
+        ref_device = next(self.model_ref.parameters()).device
+        if ref_device.type != 'cpu':
+            log.warning(f"model_ref was moved to {ref_device}, moving back to CPU")
+            self.model_ref = self.model_ref.cpu()
+            torch.cuda.empty_cache()
 
     def training_step(self, batch, batch_idx):
         input_ids = batch["primary_input_ids"]
@@ -148,6 +201,7 @@ class UnlearningNPOTrainingModule(pl.LightningModule):
 
         batch_size = input_ids.shape[0]
 
+        # 前向传播model_theta
         outputs_theta = self.model_theta(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -155,14 +209,33 @@ class UnlearningNPOTrainingModule(pl.LightningModule):
         )
         log_probs_theta = -outputs_theta.loss
 
-        self.model_ref.to(input_ids.device)
+        # 在CPU上运行model_ref的前向传播，避免占用GPU显存
+        # 将输入移到CPU，计算后再移回GPU
+        ref_device = next(self.model_ref.parameters()).device
+        if ref_device.type != 'cpu':
+            # 如果model_ref不在CPU上，先移回CPU
+            self.model_ref = self.model_ref.cpu()
+            torch.cuda.empty_cache()
+        
+        # 将输入移到CPU进行计算
+        input_ids_cpu = input_ids.cpu()
+        attention_mask_cpu = attention_mask.cpu()
+        labels_cpu = labels.cpu()
+        
         with torch.no_grad():
             outputs_ref = self.model_ref(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                labels=labels,
+                input_ids=input_ids_cpu,
+                attention_mask=attention_mask_cpu,
+                labels=labels_cpu,
             )
             log_probs_ref = -outputs_ref.loss
+        
+        # 将结果移回GPU（log_probs_ref是一个标量，占用很少显存）
+        log_probs_ref = log_probs_ref.to(input_ids.device)
+        
+        # 定期清空缓存
+        if batch_idx % 10 == 0:
+            torch.cuda.empty_cache()
         
         npo_loss_term = -self.hparams.beta * (log_probs_theta - log_probs_ref)
         loss = -(2 / self.hparams.beta) * torch.nn.functional.logsigmoid(npo_loss_term)
