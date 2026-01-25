@@ -1,0 +1,6 @@
+# @package _global_
+
+# Custom experiment configuration to override wandb run name
+# Usage: python launch_training.py experiment=l1-l2-ablation
+
+name: "enpo-${unlearning_target}-l1:${task.training_module.l1_weight}-l2:${task.training_module.l2_weight}"

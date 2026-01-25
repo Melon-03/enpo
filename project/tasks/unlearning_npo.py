@@ -60,8 +60,6 @@ class UnlearningNPO:
             model_ref=model_ref,
             pre_trained_llm_tokenizer=self.pre_trained_llm_tokenizer,
             beta=self.beta,
-            lr=task_config.training_module.lr,
-            weight_decay=task_config.training_module.weight_decay,
             **task_config.training_module,
         )
 
@@ -70,7 +68,7 @@ class UnlearningNPO:
         log.info("Instantiating trainer")
         trainer = Trainer(
             **self.global_config.trainer,
-            callbacks=get_default_callbacks(),
+            callbacks=get_default_callbacks(enable_checkpointing=False),
             logger=self.logger,
             plugins=[SLURMEnvironment(auto_requeue=False)],
             enable_checkpointing=False,

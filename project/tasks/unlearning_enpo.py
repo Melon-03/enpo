@@ -183,6 +183,20 @@ class UnlearningENPO:
             log.info("Skipping initial evaluation!")
 
         log.info("Starting training!")
+        # 创建模型保存目录
+        save_dir = Path("/root/autodl-tmp/saved-models") / self.target_id
+        save_dir.mkdir(parents=True, exist_ok=True)
+        log.info(f"模型将保存到: {save_dir}")
+        
+        # 找到最后一个training和unlearning阶段的索引
+        last_training_idx = None
+        last_unlearning_idx = None
+        for idx, stage in enumerate(self.task_config.stages):
+            if stage["type"] == "training":
+                last_training_idx = idx
+            elif stage["type"] == "unlearning":
+                last_unlearning_idx = idx
+        
         for idx, stage in enumerate(self.task_config.stages):
             log.info(
                 f"Starting stage {idx + 1} ({stage['type']}) of {len(self.task_config.stages)}"
@@ -199,6 +213,18 @@ class UnlearningENPO:
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
                     log.info("Cleared GPU cache after training stage")
+                # 只在最后一个training阶段保存embedding_prediction_model
+                if idx == last_training_idx:
+                    embedding_model_path = save_dir / "embedding_prediction_model.pt"
+                    log.info(f"保存embedding_prediction_model到: {embedding_model_path}")
+                    # 获取原设备
+                    original_device = next(task.embedding_prediction_model.parameters()).device
+                    # 将模型移到CPU以节省GPU内存并保存
+                    task.embedding_prediction_model = task.embedding_prediction_model.cpu()
+                    torch.save(task.embedding_prediction_model.state_dict(), embedding_model_path)
+                    # 恢复模型到原设备
+                    task.embedding_prediction_model = task.embedding_prediction_model.to(original_device)
+                    log.info(f"embedding_prediction_model已保存")
             elif stage["type"] == "unlearning":
                 # Note: threshold is no longer used in eNPO loss, but kept for backward compatibility
                 if "threshold" in stage:
@@ -217,6 +243,18 @@ class UnlearningENPO:
                     stage_number=idx + 1,
                 )
                 trainer.logger.log_metrics(results)
+                # 只在最后一个unlearning阶段保存被遗忘的目标模型（pre_trained_llm）
+                if idx == last_unlearning_idx:
+                    unlearned_model_path = save_dir / "unlearned_model.pt"
+                    log.info(f"保存被遗忘的目标模型到: {unlearned_model_path}")
+                    # 获取原设备
+                    original_device = next(self.pre_trained_llm.parameters()).device
+                    # 将模型移到CPU以节省GPU内存并保存
+                    self.pre_trained_llm = self.pre_trained_llm.cpu()
+                    torch.save(self.pre_trained_llm.state_dict(), unlearned_model_path)
+                    # 恢复模型到原设备
+                    self.pre_trained_llm = self.pre_trained_llm.to(original_device)
+                    log.info(f"被遗忘的目标模型已保存")
         log.info("Unlearning complete!")
 
 

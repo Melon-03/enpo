@@ -106,14 +106,18 @@ def train(config: DictConfig):
 
     log.info("Running task")
     TaskClass = get_class(config.task._target_)
-    task = TaskClass(
-        config,
-        target_id=target_id,
-        target_name=target_name,
-        pre_trained_llm=pre_trained_llm,
-        pre_trained_llm_tokenizer=pre_trained_llm_tokenizer,
-        logger=logger,
-    )
+    task_kwargs = {
+        "global_config": config,
+        "target_id": target_id,
+        "target_name": target_name,
+        "pre_trained_llm": pre_trained_llm,
+        "pre_trained_llm_tokenizer": pre_trained_llm_tokenizer,
+        "logger": logger,
+    }
+    # Only pass beta if it exists in the config (for UnlearningNPO)
+    if "beta" in config.task:
+        task_kwargs["beta"] = config.task.beta
+    task = TaskClass(**task_kwargs)
     task.unlearn()
 
     wandb.finish()

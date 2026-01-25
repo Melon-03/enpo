@@ -112,10 +112,9 @@ class UnlearningATU:
         log.info("Instantiating trainer")
         trainer = Trainer(
             **self.global_config.trainer,
-            callbacks=get_default_callbacks(),
+            callbacks=get_default_callbacks(enable_checkpointing=False),
             logger=self.logger,
-            plugins=[SLURMEnvironment(auto_requeue=False)],
-            enable_checkpointing=False,
+            plugins=[SLURMEnvironment(auto_requeue=False)]
         )
 
         log.info("Starting initial evaluation!")
