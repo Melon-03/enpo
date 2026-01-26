@@ -114,7 +114,8 @@ class UnlearningATU:
             **self.global_config.trainer,
             callbacks=get_default_callbacks(enable_checkpointing=False),
             logger=self.logger,
-            plugins=[SLURMEnvironment(auto_requeue=False)]
+            plugins=[SLURMEnvironment(auto_requeue=False)],
+            enable_checkpointing=False,  # 显式禁用checkpoint保存，避免磁盘空间不足
         )
 
         log.info("Starting initial evaluation!")
@@ -131,6 +132,11 @@ class UnlearningATU:
             log.info("Skipping initial evaluation!")
 
         log.info("Starting training!")
+        # 创建模型保存目录
+        save_dir = Path("/root/autodl-tmp/saved-models/atu") / self.target_id
+        save_dir.mkdir(parents=True, exist_ok=True)
+        log.info(f"模型将保存到: {save_dir}")
+        
         for idx, stage in enumerate(self.task_config.stages):
             log.info(
                 f"Starting stage {idx + 1} ({stage['type']}) of {len(self.task_config.stages)}"
@@ -159,6 +165,20 @@ class UnlearningATU:
                     stage_number=idx + 1,
                 )
                 trainer.logger.log_metrics(results)
+        
+        # 在所有 unlearning 阶段结束后，保存被遗忘的 pretrained_model
+        log.info("所有 unlearning 阶段已完成，保存被遗忘的 pretrained_model")
+        model_path = save_dir / "pretrained_model.pt"
+        log.info(f"保存 pretrained_model 到: {model_path}")
+        # 获取原设备
+        original_device = next(self.pre_trained_llm.parameters()).device
+        # 将模型移到CPU以节省GPU内存并保存
+        self.pre_trained_llm = self.pre_trained_llm.cpu()
+        torch.save(self.pre_trained_llm.state_dict(), model_path)
+        # 恢复模型到原设备
+        self.pre_trained_llm = self.pre_trained_llm.to(original_device)
+        log.info(f"pretrained_model 已保存到: {model_path}")
+        
         log.info("Unlearning complete!")
 
 

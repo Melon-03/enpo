@@ -76,6 +76,20 @@ def train(config: DictConfig):
         os.makedirs(tmp_dir, exist_ok=True)
         os.environ["TMPDIR"] = tmp_dir
         log.info(f"设置临时目录为: {tmp_dir}")
+    
+    # 设置wandb目录到大容量存储，避免系统盘空间不足
+    if "WANDB_DIR" not in os.environ:
+        wandb_dir = "/root/autodl-tmp/wandb"
+        os.makedirs(wandb_dir, exist_ok=True)
+        os.environ["WANDB_DIR"] = wandb_dir
+        log.info(f"设置WANDB_DIR为: {wandb_dir}")
+    
+    # 设置wandb缓存目录到大容量存储
+    if "WANDB_CACHE_DIR" not in os.environ:
+        wandb_cache_dir = "/root/autodl-tmp/wandb-cache"
+        os.makedirs(wandb_cache_dir, exist_ok=True)
+        os.environ["WANDB_CACHE_DIR"] = wandb_cache_dir
+        log.info(f"设置WANDB_CACHE_DIR为: {wandb_cache_dir}")
 
     
     rng = set_seed(config)
@@ -97,11 +111,13 @@ def train(config: DictConfig):
     pre_trained_llm, pre_trained_llm_tokenizer = instantiate(config.pre_trained_llm)
 
     log.info("Instantiating logger")
+    # 禁用 log_model 以避免 wandb 自动上传 checkpoint 到系统盘
+    # 如果需要保存 checkpoint，应该使用 ModelCheckpoint callback 并配置正确的 dirpath
     logger = instantiate(
         config.wandb,
         _target_="lightning.pytorch.loggers.WandbLogger",
         resume=(config.wandb.mode == "online") and "allow",
-        log_model=True,
+        log_model=False,  # 禁用自动 checkpoint 上传，避免占用系统盘空间
     )
 
     log.info("Running task")
