@@ -1,0 +1,62 @@
+# Configuration for hidden states analysis
+# 用于分析模型各层hidden states的配置
+# 用于检查模型是否真的unlearn了特定知识
+
+# 要分析的模型路径（每次只加载一个）
+# 
+# 方式1：使用.pt/.pth checkpoint文件（需要同时指定base_model_path）
+model_path: "/root/autodl-tmp/saved-models/1_Stephen_King/unlearned_model.pt"
+base_model_path: "microsoft/Phi-3-mini-4k-instruct"
+#
+# 方式2：直接使用base model（HuggingFace模型ID或本地模型目录）
+# 只需要设置model_path，base_model_path设为null或不设置
+# model_path: "microsoft/Phi-3-mini-4k-instruct"  # 使用 HuggingFace 模型 ID
+
+# 基础模型路径（用于加载模型结构和tokenizer）
+# 如果model_path是.pt文件，必须指定此路径
+# 如果model_path是完整模型目录或HuggingFace模型ID，可以不指定（设为null）
+# base_model_path: null  # 使用base model时设为null
+
+# Tokenizer路径（可选）
+# 如果不指定，将使用base_model_path或model_path来加载tokenizer
+# tokenizer_path: "microsoft/Phi-3-mini-4k-instruct"
+
+# 模型类型 (可选: "llama", "mistral", "gpt2", "phi3" 等)
+# 主要用于日志记录，程序会自动检测模型架构
+model_type: "phi3"
+
+# 要测试的问题列表
+# 可以尝试不同的提问方式，检验模型是否真的unlearn了知识
+questions:
+  - "In which city in Maine was Stephen King born?"
+  - "Which city in Maine is Stephen King's hometown?"
+  - "What is the name of the city in Maine where author Stephen King was born?"
+  - "Complete the sentence: Stephen King was born in ___, Maine."
+
+# 要检查的输入关键词列表（用于计算Reciprocal Rank）
+# 这些关键词应该对应事实信息中的关键实体，在输入问题中查找
+# 例如：事实是 "stephen king writes sun dog"
+# - "stephen": 应该被注意到的关键词（如果模型有知识）
+# - "sun": 应该被注意到的关键词（如果模型有知识）
+keywords:
+  - "stephen"
+  - "Portland"
+
+# 输出关键词列表（用于检查模型是否倾向于输出这些token）
+# 这些关键词表示模型不知道答案时会输出的token
+# - "sorry": 当模型不知道相关知识时，会输出"sorry"这个token
+output_keywords:
+  - "sorry"
+
+# 模型生成参数（当前未使用，预留）
+generation_config:
+  max_new_tokens: 50
+  temperature: 0.7
+  do_sample: false
+
+# 输出设置
+output:
+  save_dir: "results/hidden_states_analysis"  # 结果保存目录
+  save_plot: true  # 是否保存图表
+  plot_format: "png"  # 图表格式: png, pdf, svg
+  save_data: true  # 是否保存原始数据为JSON

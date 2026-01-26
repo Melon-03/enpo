@@ -1,0 +1,34 @@
+# Configuration for comparing analysis results
+# 用于比较多个模型分析结果的配置
+
+# 分析结果JSON文件路径列表（必需）
+# 可以指定多个文件路径，用于比较不同模型的结果
+results:
+  - "results/hidden_states_analysis/enpo/analysis_results.json"
+  - "results/hidden_states_analysis/npo/analysis_results.json"
+  - "results/hidden_states_analysis/microsoft_Phi-3-mini-4k-instruct/analysis_results.json"
+# 输出目录（可选，默认为 results/comparison）
+output: "results/comparison/which city in Maine was Stephen King born?"
+
+# 要比较的问题（可选）
+# 如果不指定，会比较所有问题
+# question: "Which city in Maine is Stephen King's hometown?"
+
+# 要比较的关键词列表（可选）
+# 如果不指定，会比较所有关键词
+# keywords:
+#   - "stephen"
+#   - "Portland"
+
+# 模型标签映射（可选）
+# 用于自定义模型在图表中的显示名称
+# 可以是文件路径（JSON格式）或直接在这里定义字典
+# labels: "path/to/labels.json"
+# 或者直接定义：
+# labels:
+#   model1: "Base Model"
+#   model2: "Unlearned Model"
+
+# 输出图片格式（可选，默认为 png）
+# 可选值: png, pdf, svg
+format: "png"
