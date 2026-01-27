@@ -1,0 +1,38 @@
+# 生成结果表格和图表的配置文件
+
+# 数据来源: "wandb" 或 "json"
+source: "wandb"
+
+# Wandb 配置（当 source=wandb 时使用）
+wandb:
+  entity: "1137113080-wuhan-university"
+  project: "enpo-unlearning"
+  # 可选的运行ID列表（如果指定，只加载这些运行）
+  # run_ids: ["nm9cygpp", "1u4seowg", "g94sv0fi", "vnjvs13t", "6yyk64bw"]  # 例如: ["xzx59had", "6yyk64bw"]
+  run_ids: null
+  # 可选的运行名称列表（如果指定，只加载这些运行）
+  run_names: null  # 例如: ["enpo-1_Stephen_King-l1:1.0-l2:0"]
+
+# 任务名称过滤（用于筛选特定任务的运行，例如：unlearning-enpo）
+task_name_filter: "unlearning-enpo"
+
+# 比较方法的名称模式（用于识别要比较的其他方法）
+comparison_method_patterns: ["ga", "atu", "npo", "kl+enpo"]
+
+# JSON 文件路径（当 source=json 时使用）
+json_path: null
+
+# 输出目录
+output_dir: "./results/figure"
+
+# 是否跨目标聚合结果
+aggregate: false
+
+# 方法名称映射（可选，用于美化显示名称）
+method_name_mapping:
+  # "原始方法名": "显示名称"
+  # 例如:
+  # "enpo-1_Stephen_King-l1:1.0-l2:0": "ENPO (l2=0)"
+  # "ga-unlearning-1_Stephen_King": "GA"
+  "enpo-1_Stephen_King-l1:1.0-l2:0.05": "ENPO (l2=0.05)"
+  "enpo-1_Stephen_King-l1:1.0-l2:0": "ENPO (l2=0)"
