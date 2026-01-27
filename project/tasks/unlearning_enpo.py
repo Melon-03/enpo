@@ -183,10 +183,18 @@ class UnlearningENPO:
             log.info("Skipping initial evaluation!")
 
         log.info("Starting training!")
-        # 创建模型保存目录
-        save_dir = Path("/root/autodl-tmp/saved-models") / self.target_id
-        save_dir.mkdir(parents=True, exist_ok=True)
-        log.info(f"模型将保存到: {save_dir}")
+        # 获取保存配置（默认为 True 以保持向后兼容）
+        save_embedding_model = getattr(self.task_config, "save_embedding_model", True)
+        save_unlearned_model = getattr(self.task_config, "save_unlearned_model", True)
+        
+        # 创建模型保存目录（仅在需要保存时创建）
+        save_dir = None
+        if save_embedding_model or save_unlearned_model:
+            save_dir = Path("/root/autodl-tmp/saved-models") / self.target_id
+            save_dir.mkdir(parents=True, exist_ok=True)
+            log.info(f"模型将保存到: {save_dir}")
+        else:
+            log.info("模型保存已禁用（根据配置）")
         
         # 找到最后一个training和unlearning阶段的索引
         last_training_idx = None
@@ -213,8 +221,8 @@ class UnlearningENPO:
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
                     log.info("Cleared GPU cache after training stage")
-                # 只在最后一个training阶段保存embedding_prediction_model
-                if idx == last_training_idx:
+                # 只在最后一个training阶段保存embedding_prediction_model（如果配置允许）
+                if idx == last_training_idx and save_embedding_model:
                     embedding_model_path = save_dir / "embedding_prediction_model.pt"
                     log.info(f"保存embedding_prediction_model到: {embedding_model_path}")
                     # 获取原设备
@@ -225,6 +233,8 @@ class UnlearningENPO:
                     # 恢复模型到原设备
                     task.embedding_prediction_model = task.embedding_prediction_model.to(original_device)
                     log.info(f"embedding_prediction_model已保存")
+                elif idx == last_training_idx and not save_embedding_model:
+                    log.info("跳过保存embedding_prediction_model（根据配置）")
             elif stage["type"] == "unlearning":
                 # Note: threshold is no longer used in eNPO loss, but kept for backward compatibility
                 if "threshold" in stage:
@@ -243,8 +253,8 @@ class UnlearningENPO:
                     stage_number=idx + 1,
                 )
                 trainer.logger.log_metrics(results)
-                # 只在最后一个unlearning阶段保存被遗忘的目标模型（pre_trained_llm）
-                if idx == last_unlearning_idx:
+                # 只在最后一个unlearning阶段保存被遗忘的目标模型（pre_trained_llm）（如果配置允许）
+                if idx == last_unlearning_idx and save_unlearned_model:
                     unlearned_model_path = save_dir / "unlearned_model.pt"
                     log.info(f"保存被遗忘的目标模型到: {unlearned_model_path}")
                     # 获取原设备
@@ -255,6 +265,8 @@ class UnlearningENPO:
                     # 恢复模型到原设备
                     self.pre_trained_llm = self.pre_trained_llm.to(original_device)
                     log.info(f"被遗忘的目标模型已保存")
+                elif idx == last_unlearning_idx and not save_unlearned_model:
+                    log.info("跳过保存被遗忘的目标模型（根据配置）")
         log.info("Unlearning complete!")
 
 
