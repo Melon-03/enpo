@@ -1,4 +1,4 @@
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from pathlib import Path
 from lightning.pytorch import Trainer
 from lightning.pytorch.plugins.environments import SLURMEnvironment
@@ -514,7 +514,12 @@ class UnlearningENPOTrainingModule(pl.LightningModule):
                         )
                     else:
                         # Use provided LoRA configuration
-                        if isinstance(self.lora_config, dict):
+                        # Convert OmegaConf DictConfig to regular dict if needed
+                        from omegaconf import DictConfig as OmegaDictConfig
+                        if isinstance(self.lora_config, OmegaDictConfig):
+                            lora_config_dict = OmegaConf.to_container(self.lora_config, resolve=True)
+                            lora_config = LoraConfig(**lora_config_dict)
+                        elif isinstance(self.lora_config, dict):
                             lora_config = LoraConfig(**self.lora_config)
                         else:
                             lora_config = self.lora_config
