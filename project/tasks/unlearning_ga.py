@@ -9,8 +9,17 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from project.utils import get_logger, log_hyperparameters
 from lightning.pytorch.loggers import Logger
 from project.utils.callbacks import get_default_callbacks
+from pathlib import Path
 
 log = get_logger()
+
+# Try to import PEFT for LoRA support
+try:
+    from peft import LoraConfig, get_peft_model, TaskType, PeftModel
+    PEFT_AVAILABLE = True
+except ImportError:
+    PEFT_AVAILABLE = False
+    log.warning("PEFT library not available. LoRA support will be disabled. Install with: pip install peft")
 
 
 class UnlearningGA:
@@ -77,6 +86,15 @@ class UnlearningGA:
             log.info("Skipping initial evaluation!")
 
         log.info("Starting training!")
+        # Get save configuration
+        save_unlearned_model = getattr(self.task_config, "save_unlearned_model", False)
+        save_dir = None
+        if save_unlearned_model:
+            save_dir = Path("/root/autodl-tmp/saved-models") / "ga" / self.target_id
+            save_dir.mkdir(parents=True, exist_ok=True)
+            log.info(f"模型将保存到: {save_dir}")
+        
+        last_unlearning_idx = len(task_config.stages) - 1
         for idx, stage in enumerate(task_config.stages):
             assert stage["type"] == "unlearning"
             log.info(
@@ -98,6 +116,33 @@ class UnlearningGA:
                 0,
             )
             trainer.logger.log_metrics(results)
+            
+            # Save model after last stage if configured
+            if idx == last_unlearning_idx and save_unlearned_model:
+                unlearned_model_path = save_dir / "unlearned_model.pt"
+                log.info(f"保存被遗忘的目标模型到: {unlearned_model_path}")
+                original_device = next(self.pre_trained_llm.parameters()).device
+                model_to_save = task.pre_trained_llm
+                model_to_save = model_to_save.cpu()
+                
+                if task.use_lora and task.lora_loaded and PEFT_AVAILABLE:
+                    # Save LoRA weights
+                    lora_path = save_dir / "unlearned_model_lora"
+                    lora_path.mkdir(parents=True, exist_ok=True)
+                    model_to_save.save_pretrained(str(lora_path))
+                    log.info(f"LoRA权重已保存到: {lora_path}")
+                    torch.save({
+                        "lora_path": str(lora_path),
+                        "use_lora": True,
+                        "state_dict": model_to_save.state_dict(),
+                    }, unlearned_model_path)
+                else:
+                    # Save full model
+                    torch.save(model_to_save.state_dict(), unlearned_model_path)
+                
+                task.pre_trained_llm = model_to_save.to(original_device)
+                self.pre_trained_llm = task.pre_trained_llm
+                log.info(f"被遗忘的目标模型已保存")
         log.info("Unlearning complete!")
 
 
@@ -115,9 +160,52 @@ class UnlearningGATrainingModule(pl.LightningModule):
         self.pre_trained_llm = pre_trained_llm
         self.pre_trained_llm_tokenizer = pre_trained_llm_tokenizer
         self.automatic_optimization = True
-
-        for param in self.pre_trained_llm.parameters():
-            param.requires_grad = True
+        
+        # LoRA configuration
+        self.use_lora = kwargs.get("use_lora", False)
+        self.lora_config = kwargs.get("lora_config", None)
+        self.lora_loaded = False
+        
+        # Apply LoRA if enabled
+        if self.use_lora:
+            if not PEFT_AVAILABLE:
+                log.warning("LoRA requested but PEFT library not available. Falling back to full fine-tuning.")
+                self.use_lora = False
+            else:
+                log.info("Applying LoRA to pre_trained_llm")
+                if self.lora_config is None:
+                    # Default LoRA configuration
+                    log.info("Using default LoRA configuration")
+                    lora_config = LoraConfig(
+                        task_type=TaskType.CAUSAL_LM,
+                        r=16,
+                        lora_alpha=32,
+                        lora_dropout=0.05,
+                        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+                        bias="none",
+                    )
+                else:
+                    # Use provided LoRA configuration
+                    if isinstance(self.lora_config, dict):
+                        lora_config = LoraConfig(**self.lora_config)
+                    else:
+                        lora_config = self.lora_config
+                
+                # Apply LoRA to the model
+                self.pre_trained_llm = get_peft_model(self.pre_trained_llm, lora_config)
+                self.lora_loaded = True
+                log.info(f"LoRA applied. Trainable parameters: {self.pre_trained_llm.get_nb_trainable_parameters()}")
+        
+        if not self.use_lora:
+            # Full fine-tuning: enable gradients for all parameters
+            for param in self.pre_trained_llm.parameters():
+                param.requires_grad = True
+        else:
+            # LoRA: only LoRA parameters have gradients enabled (handled by PEFT)
+            # Disable gradients for base model parameters
+            for name, param in self.pre_trained_llm.named_parameters():
+                if "lora" not in name.lower():
+                    param.requires_grad = False
 
     def training_step(self, batch, batch_idx):
         input_ids = batch["primary_input_ids"]  # shape (batch_size, max_length)
@@ -139,10 +227,23 @@ class UnlearningGATrainingModule(pl.LightningModule):
         return {"loss": loss}
 
     def configure_optimizers(self):
-        return [
-            torch.optim.AdamW(
-                self.pre_trained_llm.parameters(),
-                lr=self.hparams.lr,
-                weight_decay=self.hparams.weight_decay,
-            ),
-        ]
+        if self.use_lora and self.lora_loaded:
+            # Only optimize trainable (LoRA) parameters
+            trainable_params = [p for p in self.pre_trained_llm.parameters() if p.requires_grad]
+            log.info(f"Configuring optimizer for {len(trainable_params)} LoRA parameter groups")
+            return [
+                torch.optim.AdamW(
+                    trainable_params,
+                    lr=self.hparams.lr,
+                    weight_decay=self.hparams.weight_decay,
+                ),
+            ]
+        else:
+            # Full fine-tuning: optimize all parameters
+            return [
+                torch.optim.AdamW(
+                    self.pre_trained_llm.parameters(),
+                    lr=self.hparams.lr,
+                    weight_decay=self.hparams.weight_decay,
+                ),
+            ]

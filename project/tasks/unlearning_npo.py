@@ -14,6 +14,14 @@ from project.utils.callbacks import get_default_callbacks
 
 log = get_logger()
 
+# Try to import PEFT for LoRA support
+try:
+    from peft import LoraConfig, get_peft_model, TaskType, PeftModel
+    PEFT_AVAILABLE = True
+except ImportError:
+    PEFT_AVAILABLE = False
+    log.warning("PEFT library not available. LoRA support will be disabled. Install with: pip install peft")
+
 
 class UnlearningNPO:
     def __init__(
@@ -127,20 +135,43 @@ class UnlearningNPO:
         log.info("Unlearning complete!")
         
         # 保存被遗忘的模型
-        save_dir = Path("/root/autodl-tmp/saved-models") / "npo" / self.target_id
-        save_dir.mkdir(parents=True, exist_ok=True)
-        log.info(f"模型将保存到: {save_dir}")
-        
-        unlearned_model_path = save_dir / "unlearned_model.pt"
-        log.info(f"保存被遗忘的目标模型到: {unlearned_model_path}")
-        # 获取原设备
-        original_device = next(self.pre_trained_llm.parameters()).device
-        # 将模型移到CPU以节省GPU内存并保存
-        self.pre_trained_llm = self.pre_trained_llm.cpu()
-        torch.save(self.pre_trained_llm.state_dict(), unlearned_model_path)
-        # 恢复模型到原设备
-        self.pre_trained_llm = self.pre_trained_llm.to(original_device)
-        log.info(f"被遗忘的目标模型已保存")
+        save_unlearned_model = getattr(self.task_config, "save_unlearned_model", False)
+        if save_unlearned_model:
+            save_dir = Path("/root/autodl-tmp/saved-models") / "npo" / self.target_id
+            save_dir.mkdir(parents=True, exist_ok=True)
+            log.info(f"模型将保存到: {save_dir}")
+            
+            unlearned_model_path = save_dir / "unlearned_model.pt"
+            log.info(f"保存被遗忘的目标模型到: {unlearned_model_path}")
+            # 使用 task_module.model_theta（可能已应用 LoRA）而不是 self.pre_trained_llm
+            model_to_save = task_module.model_theta
+            # 获取原设备
+            original_device = next(model_to_save.parameters()).device
+            # 将模型移到CPU以节省GPU内存并保存
+            model_to_save = model_to_save.cpu()
+            
+            # 如果使用 LoRA，保存 LoRA 权重；否则保存完整模型
+            if task_module.use_lora and task_module.lora_loaded and PEFT_AVAILABLE:
+                # 保存 LoRA 权重
+                lora_path = save_dir / "unlearned_model_lora"
+                lora_path.mkdir(parents=True, exist_ok=True)
+                model_to_save.save_pretrained(str(lora_path))
+                log.info(f"LoRA权重已保存到: {lora_path}")
+                torch.save({
+                    "lora_path": str(lora_path),
+                    "use_lora": True,
+                    "state_dict": model_to_save.state_dict(),
+                }, unlearned_model_path)
+            else:
+                # 保存完整模型
+                torch.save(model_to_save.state_dict(), unlearned_model_path)
+            
+            # 恢复模型到原设备
+            task_module.model_theta = model_to_save.to(original_device)
+            # 同步更新 self.pre_trained_llm（如果它们不是同一个对象）
+            if task_module.use_lora and task_module.lora_loaded:
+                self.pre_trained_llm = task_module.model_theta
+            log.info(f"被遗忘的目标模型已保存")
 
 
 class UnlearningNPOTrainingModule(pl.LightningModule):
@@ -160,9 +191,52 @@ class UnlearningNPOTrainingModule(pl.LightningModule):
         self.model_ref = model_ref
         self.pre_trained_llm_tokenizer = pre_trained_llm_tokenizer
         self.automatic_optimization = True
-
-        for param in self.model_theta.parameters():
-            param.requires_grad = True
+        
+        # LoRA configuration
+        self.use_lora = kwargs.get("use_lora", False)
+        self.lora_config = kwargs.get("lora_config", None)
+        self.lora_loaded = False
+        
+        # Apply LoRA if enabled
+        if self.use_lora:
+            if not PEFT_AVAILABLE:
+                log.warning("LoRA requested but PEFT library not available. Falling back to full fine-tuning.")
+                self.use_lora = False
+            else:
+                log.info("Applying LoRA to model_theta")
+                if self.lora_config is None:
+                    # Default LoRA configuration
+                    log.info("Using default LoRA configuration")
+                    lora_config = LoraConfig(
+                        task_type=TaskType.CAUSAL_LM,
+                        r=16,
+                        lora_alpha=32,
+                        lora_dropout=0.05,
+                        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+                        bias="none",
+                    )
+                else:
+                    # Use provided LoRA configuration
+                    if isinstance(self.lora_config, dict):
+                        lora_config = LoraConfig(**self.lora_config)
+                    else:
+                        lora_config = self.lora_config
+                
+                # Apply LoRA to the model
+                self.model_theta = get_peft_model(self.model_theta, lora_config)
+                self.lora_loaded = True
+                log.info(f"LoRA applied. Trainable parameters: {self.model_theta.get_nb_trainable_parameters()}")
+        
+        if not self.use_lora:
+            # Full fine-tuning: enable gradients for all parameters
+            for param in self.model_theta.parameters():
+                param.requires_grad = True
+        else:
+            # LoRA: only LoRA parameters have gradients enabled (handled by PEFT)
+            # Disable gradients for base model parameters
+            for name, param in self.model_theta.named_parameters():
+                if "lora" not in name.lower():
+                    param.requires_grad = False
         
         # 启用梯度检查点以节省显存
         if hasattr(self.model_theta, 'gradient_checkpointing_enable'):
@@ -247,10 +321,23 @@ class UnlearningNPOTrainingModule(pl.LightningModule):
         return {"loss": loss}
 
     def configure_optimizers(self):
-        return [
-            torch.optim.AdamW(
-                self.model_theta.parameters(),
-                lr=self.hparams.lr,
-                weight_decay=self.hparams.weight_decay,
-            ),
-        ]
+        if self.use_lora and self.lora_loaded:
+            # Only optimize trainable (LoRA) parameters
+            trainable_params = [p for p in self.model_theta.parameters() if p.requires_grad]
+            log.info(f"Configuring optimizer for {len(trainable_params)} LoRA parameter groups")
+            return [
+                torch.optim.AdamW(
+                    trainable_params,
+                    lr=self.hparams.lr,
+                    weight_decay=self.hparams.weight_decay,
+                ),
+            ]
+        else:
+            # Full fine-tuning: optimize all parameters
+            return [
+                torch.optim.AdamW(
+                    self.model_theta.parameters(),
+                    lr=self.hparams.lr,
+                    weight_decay=self.hparams.weight_decay,
+                ),
+            ]

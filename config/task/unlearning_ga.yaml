@@ -10,6 +10,20 @@ training_module:
   lr: 0.00000006
   weight_decay: 0.0
   clip_grad_norm: 0.05
+  
+  # LoRA configuration (optional)
+  # Set use_lora: true to enable LoRA training instead of full fine-tuning
+  # This can significantly reduce memory usage (saves ~35-40GB GPU memory)
+  use_lora: false  # Set to true to enable LoRA
+  lora_config:  # LoRA parameters (optional, uses defaults if not specified)
+    r: 16  # LoRA rank
+    lora_alpha: 32  # LoRA scaling parameter
+    lora_dropout: 0.05  # LoRA dropout
+    target_modules: ["q_proj", "k_proj", "v_proj", "o_proj"]  # Modules to apply LoRA to
+    bias: "none"  # Whether to train bias ("none", "all", or "lora_only")
+
+# Model saving configuration
+save_unlearned_model: false  # Whether to save unlearned_model after training
 
 
 stages:

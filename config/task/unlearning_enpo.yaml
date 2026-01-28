@@ -19,6 +19,17 @@ training_module:
   beta: 1.0  # eNPO loss parameter
   l1_weight: 1.0  # Weight for L1 (eNPO loss)
   l2_weight: 0.06  # Weight for L2 (KL divergence loss for non-forgetting)
+  
+  # LoRA configuration for unlearning stage (optional)
+  # Set use_lora: true to enable LoRA training instead of full fine-tuning
+  # This can significantly reduce memory usage (saves ~35-40GB GPU memory)
+  use_lora: true  # Set to true to enable LoRA
+  lora_config:  # LoRA parameters (optional, uses defaults if not specified)
+    r: 16  # LoRA rank
+    lora_alpha: 32  # LoRA scaling parameter
+    lora_dropout: 0.05  # LoRA dropout
+    target_modules: ["q_proj", "k_proj", "v_proj", "o_proj"]  # Modules to apply LoRA to
+    bias: "none"  # Whether to train bias ("none", "all", or "lora_only")
 
 num_other_targets: 3
 
@@ -32,7 +43,7 @@ reference_embedding_model_path: null
 
 # Model saving configuration
 save_embedding_model: false  # Whether to save embedding_prediction_model after last training stage
-save_unlearned_model: false  # Whether to save unlearned_model (pre_trained_llm) after last unlearning stage
+save_unlearned_model: true  # Whether to save unlearned_model (pre_trained_llm) after last unlearning stage
 
 stages:
   - type: "training"
